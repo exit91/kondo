@@ -4,7 +4,7 @@ use std::{
     env::current_dir,
     error::Error,
     io::{stdin, stdout, BufRead, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use kondo_lib::{dir_size, path_canonicalise, pretty_size, scan};
@@ -19,6 +19,10 @@ struct Opt {
     #[structopt(name = "DIRS", parse(from_os_str))]
     dirs: Vec<PathBuf>,
 
+    /// The directories to exclude.
+    #[structopt(short = "-e", long = "--exclude", parse(from_os_str))]
+    excludes: Vec<PathBuf>,
+
     /// Quiet mode. Won't output to the terminal. -qq prevents all output.
     #[structopt(short, long, parse(from_occurrences))]
     quiet: u8,
@@ -28,9 +32,12 @@ struct Opt {
     all: bool,
 }
 
-fn prepare_directories(dirs: Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn prepare_directories(
+    dirs: Vec<PathBuf>,
+    default_to_current_dir: bool,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let cd = current_dir()?;
-    if dirs.is_empty() {
+    if dirs.is_empty() && default_to_current_dir {
         return Ok(vec![cd]);
     }
 
@@ -54,13 +61,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stdin = stdin();
     let mut read_handle = stdin.lock();
 
-    let dirs = prepare_directories(opt.dirs)?;
+    let dirs = prepare_directories(opt.dirs, true)?;
     let mut projects_cleaned = 0;
     let mut bytes_deleted = 0;
+
+    let excludes: Vec<PathBuf> = prepare_directories(opt.excludes, false)?;
+    let is_excluded = |path: &Path| -> bool { excludes.iter().any(|ex| path.starts_with(ex)) };
 
     let mut clean_all = opt.all;
 
     'project_loop: for project in dirs.iter().flat_map(scan).filter_map(|p| p.ok()) {
+        if is_excluded(&project.path) {
+            if opt.quiet == 0 {
+                writeln!(
+                    &mut write_handle,
+                    "Skipping {} {} project",
+                    &project.name(),
+                    project.type_name(),
+                )?;
+            }
+            continue;
+        }
         write_buffer.clear();
 
         let project_artifact_bytes = project
