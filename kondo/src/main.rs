@@ -25,6 +25,10 @@ struct Opt {
     #[arg(name = "DIRS")]
     dirs: Vec<PathBuf>,
 
+    /// The directories to exclude.
+    #[arg(short, long)]
+    excludes: Vec<PathBuf>,
+
     /// Quiet mode. Won't output to the terminal. -qq prevents all output.
     #[arg(short, long, action = clap::ArgAction::Count, value_parser = clap::value_parser!(u8).range(0..3))]
     quiet: u8,
@@ -48,9 +52,6 @@ struct Opt {
 
 fn prepare_directories(dirs: Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let cd = current_dir()?;
-    if dirs.is_empty() {
-        return Ok(vec![cd]);
-    }
 
     let dirs = dirs
         .into_iter()
@@ -136,6 +137,7 @@ type DeleteData = (Project, u64);
 
 fn discover(
     dirs: Vec<PathBuf>,
+    excludes: Vec<PathBuf>,
     scan_options: &ScanOptions,
     project_min_age: u64,
     result_sender: SyncSender<DiscoverData>,
@@ -145,6 +147,10 @@ fn discover(
         .flat_map(|dir| scan(dir, scan_options))
         .filter_map(|p| p.ok())
     {
+        if excludes.iter().any(|ex| project.path.starts_with(ex)) {
+            continue;
+        }
+
         let artifact_dir_sizes: Vec<_> = project
             .artifact_dirs()
             .iter()
@@ -265,7 +271,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(1);
     }
 
-    let dirs = prepare_directories(opt.dirs)?;
+    let cd = current_dir()?;
+    let dirs = prepare_directories(if opt.dirs.is_empty() {
+        vec![cd]
+    } else {
+        opt.dirs
+    })?;
+
+    let excludes = prepare_directories(opt.excludes)?;
 
     let scan_options: ScanOptions = ScanOptions {
         follow_symlinks: opt.follow_symlinks,
@@ -277,7 +290,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let project_min_age = opt.older;
     std::thread::spawn(move || {
-        discover(dirs, &scan_options, project_min_age, proj_discover_send);
+        discover(
+            dirs,
+            excludes,
+            &scan_options,
+            project_min_age,
+            proj_discover_send,
+        );
     });
 
     let delete_handle = std::thread::spawn(move || process_deletes(proj_delete_recv));
